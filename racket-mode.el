@@ -69,8 +69,6 @@
      ("C-c C-p"     racket-cycle-paren-shapes)
      ("M-C-y"       racket-insert-lambda)
      ("C-c C-d"     racket-documentation-search)
-     ("M-C-."       racket-visit-module)
-     ("M-,"         racket-unvisit)
      ("C-c C-f"     racket-fold-all-tests)
      ("C-c C-u"     racket-unfold-all-tests)
      ((")" "]" "}") racket-insert-closing)))
@@ -112,8 +110,8 @@
     ["Align" racket-align]
     ["Unalign" racket-unalign]
     "---"
-    ["Visit Module" racket-visit-module]
-    ["Return from Visit" racket-unvisit]
+    ["Visit Module" xref-find-definitions]
+    ["Return from Visit" xref-pop-marker-stack]
     "---"
     ["Open Require Path" racket-open-require-path]
     ["Find Collection" racket-find-collection]

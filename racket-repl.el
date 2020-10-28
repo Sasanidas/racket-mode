@@ -926,28 +926,31 @@ and `racket-repl-documentation'."
       (lambda ()
         (racket--doc-command (racket--repl-session-id) 'namespace str))))))
 
+;;; racket-xref-repl
+
+;; (cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xref-repl)))
+;;   (racket--module-at-point))
+
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql racket-xp-xref-repl)))
+  (completion-table-dynamic
+   (lambda (prefix)
+     (all-completions prefix racket--repl-namespace-symbols))))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xref-repl)) prompt)
+  (pcase (racket--cmd/await racket--repl-session-id `(def namespace ,prompt))
+    (`(,path ,line ,col)
+     (list (xref-make "Summary"
+                      (xref-make-file-location path line col))))
+    (`kernel
+     (list (xref-make "Summary"
+                      (xref-make-bogus-location
+                       "Defined in #%%kernel -- source not available"))))))
+
+(defun racket-xref-repl-backend-function ()
+  (and (memq major-mode '(racket-repl-mode racket-describe-mode))
+       'racket-xref-repl))
+
 ;;; Visit
-
-(defun racket-repl-visit-definition (&optional prefix)
-  "Visit definition of identifier at point.
-
-If there is no identifier at point, prompt for it.
-
-With \\[universal-argument] always prompt for the identifier.
-
-Use `racket-unvisit' to return.
-
-Please keep in mind the following limitations:
-
-- Finds symbols defined in the REPL's namespace, which only
-  includes imported and module binding -- but not local bindings.
-
-- If the definition is found in Racket's \"#%kernel\" module, it
-  will tell you so but won't visit the definition site."
-  (interactive "P")
-  (pcase (racket--symbol-at-point-or-prompt prefix "Visit definition of: "
-                                            racket--repl-namespace-symbols)
-    ((and (pred stringp) str) (racket--repl-visit-symbol-definition str))))
 
 ;; TODO: Move to `racket-xp-mode', or arrange for this to call that or
 ;; this depending on current-buffer.
@@ -1050,9 +1053,6 @@ The command varies based on how many \\[universal-argument] command prefixes you
      ("M-C-y"           racket-insert-lambda)
      ("C-c C-d"         racket-repl-documentation)
      ("C-c C-."         racket-repl-describe)
-     ("M-."             racket-repl-visit-definition)
-     ("C-M-."           racket-visit-module)
-     ("M-,"             racket-unvisit)
      ("C-c C-z"         racket-repl-switch-to-edit)
      ("C-c C-l"         racket-logger)
      ("C-c C-c"         racket-repl-break)
@@ -1075,9 +1075,8 @@ The command varies based on how many \\[universal-argument] command prefixes you
      ["Definition" racket-expand-definition]
      ["Last S-Expression" racket-expand-last-sexp])
     "---"
-    ["Visit Definition" racket-visit-definition]
-    ["Visit Module" racket-visit-module]
-    ["Return from Visit" racket-unvisit]
+    ["Visit Definition" xref-find-definitions]
+    ["Return from Visit" xref-pop-marker-stack]
     "---"
     ["Racket Documentation" racket-doc]
     ["Describe" racket-describe]
@@ -1107,7 +1106,9 @@ The command varies based on how many \\[universal-argument] command prefixes you
                                 racket--config-dir))
   (comint-read-input-ring t)
   (add-hook 'kill-buffer-hook #'comint-write-input-ring nil t)
-  (add-hook 'kill-emacs-hook #'racket--repl-save-all-histories nil t))
+  (add-hook 'kill-emacs-hook #'racket--repl-save-all-histories nil t)
+  (add-hook 'xref-backend-functions #'racket-xref-repl-backend-function nil t)
+  (add-hook 'xref-backend-functions #'racket-xref-module-backend-function nil t))
 
 (defun racket--repl-save-all-histories ()
   "Call comint-write-input-ring for all `racket-repl-mode' buffers.

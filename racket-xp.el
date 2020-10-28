@@ -49,7 +49,7 @@ everything. If you find that too \"noisy\", set this to nil.")
      ("k" ,#'racket-xp-previous-definition)
      ("n" ,#'racket-xp-next-use)
      ("p" ,#'racket-xp-previous-use)
-     ("." ,#'racket-xp-visit-definition)
+     ("." ,#'xref-find-definitions)
      ("r" ,#'racket-xp-rename)
      ("g" ,#'racket-xp-annotate)
      ("N" ,#'racket-xp-next-error)
@@ -58,7 +58,6 @@ everything. If you find that too \"noisy\", set this to nil.")
 (defvar racket-xp-mode-map
   (racket--easy-keymap-define
    `(("C-c #"     ,racket-xp-control-c-hash-keymap)
-     ("M-."       ,#'racket-xp-visit-definition)
      ("C-c C-."   ,#'racket-xp-describe)
      ("C-c C-d"   ,#'racket-xp-documentation))))
 
@@ -76,8 +75,8 @@ everything. If you find that too \"noisy\", set this to nil.")
     "---"
     ["Rename" racket-xp-rename]
     "---"
-    ["Visit Definition" racket-xp-visit-definition]
-    ["Return from Visit" racket-unvisit]
+    ["Visit Definition" xref-find-definitions]
+    ["Return from Visit" xref-pop-marker-stack]
     "---"
     ["Racket Documentation" racket-xp-documentation]
     ["Describe" racket-xp-describe]
@@ -219,6 +218,7 @@ commands directly to whatever keys you prefer.
                             `(module-names)
                             (lambda (result)
                               (setq racket--xp-module-completions result)))
+         (racket-xp--add-xref-hooks)
          (setq-local imenu-create-index-function #'racket-xp-imenu-create-index-function)
          (add-hook 'pre-redisplay-functions
                    #'racket-xp-pre-redisplay
@@ -236,6 +236,7 @@ commands directly to whatever keys you prefer.
                    #'racket-complete-at-point
                    t t)
          (setq-local imenu-create-index-function #'racket-imenu-create-index-function)
+         (racket-xp--remove-xref-hooks)
          (remove-hook 'pre-redisplay-functions
                       #'racket-xp-pre-redisplay
                       t))))
@@ -263,7 +264,7 @@ press F1 or C-h in its pop up completion list.
 
 You can quit the buffer by pressing q. Also, at the bottom of the
 buffer are Emacs buttons -- which you may navigate among using
-TAB, and activate using RET -- for `racket-xp-visit-definition'
+TAB, and activate using RET -- for `xref-find-definitions'
 and `racket-xp-documentation'."
   (interactive "P")
   (pcase (racket--symbol-at-point-or-prompt prefix "Describe: "
@@ -278,14 +279,13 @@ and `racket-xp-documentation'."
                   (`(,path ,anchor) `(,path . ,anchor))
                   (_                (racket--buffer-file-name))))
            ;; These two thunks are effectively lazy
-           ;; `racket-xp-visit-definition' and
-           ;; `racket-xp-documentation'. The thunks might be called
-           ;; later, if/when the user "clicks" a "button" in the
-           ;; `racket-describe-mode' buffer. By the time that happens,
-           ;; this `racket-mode' buffer might no longer exist. Even if
-           ;; it exists, point may have changed. That's why it is
-           ;; important to capture values from the `racket-mode'
-           ;; buffer, now.
+           ;; `xref-find-definitions' and `racket-xp-documentation'.
+           ;; The thunks might be called later, if/when the user
+           ;; "clicks" a "button" in the `racket-describe-mode'
+           ;; buffer. By the time that happens, this `racket-mode'
+           ;; buffer might no longer exist. Even if it exists, point
+           ;; may have changed. That's why it is important to capture
+           ;; values from the `racket-mode' buffer, now.
            (visit-thunk
             (pcase (get-text-property (point) 'racket-xp-visit)
               (`(,path ,subs ,ids)
@@ -410,6 +410,133 @@ or `racket-repl-describe'."
     (set-window-parameter window param nil))
   (racket-xp-pre-redisplay window))
 
+;;; xref
+
+(defconst racket-xp--xref-backend-functions
+  (reverse
+   (list #'racket-xp-xref-local-backend-function
+         #'racket-xp-xref-jump-backend-function
+         #'racket-xp-xref-import-backend-function
+         #'racket-xp-xref-search-backend-function)))
+
+(defun racket-xp--add-xref-hooks ()
+  (dolist (f racket-xp--xref-backend-functions)
+    (add-hook 'xref-backend-functions f nil t)))
+
+(defun racket-xp--remove-xref-hooks ()
+  (dolist (f racket-xp--xref-backend-functions)
+    (remove-hook 'xref-backend-functions f t)))
+
+;; racket-xp-ref-local: bindings defined in this file
+
+(defun racket-xp-xref-local-backend-function ()
+  (and (xref-backend-identifier-at-point 'racket-xp-xref-local)
+       'racket-xp-xref-local))
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xp-xref-local)))
+  (let* ((def+uses
+           (or (pcase (get-text-property (point) 'racket-xp-use)
+                 (`(,beg ,end)
+                  (pcase (get-text-property beg 'racket-xp-def)
+                    (`(local ,_id ,uses)
+                     (cons (list beg end) uses)))))
+               (pcase (get-text-property (point) 'racket-xp-def)
+                 (`(local ,_id ,uses)
+                  (cons (list (previous-single-property-change (point) 'racket-xp-def nil (point))
+                              (next-single-property-change (point) 'racket-xp-def))
+                        uses)))))
+         (def (car def+uses))
+         (str (and def (buffer-substring-no-properties (car def) (cadr def)))))
+    (and def+uses
+         (propertize str 'def+uses def+uses))))
+
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql racket-xp-xref-local)))
+  (let* ((iap (xref-backend-identifier-at-point 'racket-xp-xref-local))
+         (cs  (and iap (list iap))))
+    (completion-table-dynamic
+     (lambda (prefix)
+       (all-completions prefix cs)))))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xp-xref-local)) v)
+  (pcase-let ((`((,beg ,_end) . ,_) (get-text-property 0 'def+uses v)))
+    (list
+     ;;TODO Use xref-make-match for span
+     (xref-make "Summary"
+                (xref-make-buffer-location (current-buffer) (marker-position beg))))))
+
+(cl-defmethod xref-backend-references ((_backend (eql racket-xp-xref-local)) v)
+  (pcase-let ((`(,def . ,uses) (get-text-property 0 'def+uses v)))
+    (mapcar (lambda (use)
+              (pcase-let ((`(,beg ,_end) use))
+                ;;TODO Use xref-make-match for span
+                (xref-make
+                 "Summary"
+                 (xref-make-buffer-location (current-buffer) (marker-position beg)))))
+            uses)))
+
+;;; 'racket-xp-xref-jump: Annotated for jump-to-def by drracket/check-syntax
+
+(defun racket-xp-xref-jump-backend-function ()
+  (and (xref-backend-identifier-at-point 'racket-xp-xref-jump)
+       'racket-xp-xref-jump))
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xp-xref-jump)))
+  (racket--buffer-substring-if-property 'racket-xp-visit))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xp-xref-jump)) v)
+  (pcase (get-text-property 0 'racket-xp-visit v)
+    (`(,path ,subs ,ids)
+     (pcase (racket--cmd/await nil `(def/drr ,(racket--buffer-file-name) ,path ,subs ,ids))
+       (`(,path ,line ,col)
+        (list (xref-make "Summary"
+                         (xref-make-file-location path line col))))))))
+
+;; 'racket-xp-xref-import: Annotated by dr/cs as imported module; visit the module
+
+(defun racket-xp-xref-import-backend-function ()
+  (and (xref-backend-identifier-at-point 'racket-xp-xref-import)
+       'racket-xp-xref-import))
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xp-xref-import)))
+  (pcase (get-text-property (point) 'racket-xp-def)
+    (`(import ,id . ,_) id)))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xp-xref-import)) id)
+  (xref-backend-definitions 'racket-xref-module id))
+
+;; 'racket-xp-xref-search
+
+(defun racket-xp-xref-search-backend-function ()
+  (and (xref-backend-identifier-at-point 'racket-xp-xref-search)
+       'racket-xp-xref-search))
+
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql racket-xp-xref-search)))
+  (completion-table-dynamic
+   (lambda (prefix)
+     (all-completions prefix racket--xp-binding-completions))))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xp-xref-search)) id)
+  (pcase (racket--cmd/await nil `(def ,(racket--buffer-file-name) ,id))
+    (`(,path ,line ,col)
+     (list (xref-make "Summary"
+                      (xref-make-file-location path line col))))
+    (`kernel
+     (list (xref-make "Summary"
+                      (xref-make-bogus-location
+                       "Defined in #%%kernel -- source not available"))))))
+
+(defun racket--buffer-substring-if-property (prop)
+  (let ((pos (point)))
+    (and (get-text-property pos prop)
+         (let* ((beg (if (or (= pos 1)
+                             (not (get-text-property (1- pos) prop)))
+                         pos
+                       (previous-single-property-change pos prop)))
+                (end (next-single-property-change beg prop)))
+           (buffer-substring beg end)))))
+
+
+;; TODO: Decompose these into individual xref backends?
 (defun racket-xp-visit-definition (&optional prefix)
   "When point is on a use, go to its definition.
 

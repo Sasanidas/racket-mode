@@ -16,6 +16,8 @@
 ;; General Public License for more details. See
 ;; http://www.gnu.org/licenses/ for details.
 
+(require 'xref)
+(require 'racket-complete)
 (require 'racket-cmd)
 (require 'racket-ppss)
 (require 'racket-util)
@@ -53,7 +55,8 @@ See also: `racket-find-collection'."
   ;; detect latter (string). 2. Returns nil if on the opening quote;
   ;; use `forward-char' then.
   (save-excursion
-    (when (eq ?\" (char-syntax (char-after))) ;2
+    (when (and (char-after)
+               (eq ?\" (char-syntax (char-after)))) ;2
       (forward-char))
     (pcase (thing-at-point 'filename t)
       (`() `())
@@ -118,6 +121,22 @@ See also: `racket-find-collection'."
          (pop-to-buffer-same-window buffer)
          (goto-char pt)))
     (message "Stack empty.")))
+
+;;; racket-xref-module
+
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xref-module)))
+  (racket--module-at-point))
+
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-xref-module)) id)
+  (pcase (racket--cmd/await nil `(mod ,id))
+    (`(,path ,line ,col)
+     (list (xref-make "Summary"
+                      (xref-make-file-location path line col))))))
+
+(defun racket-xref-module-backend-function ()
+  (and (memq major-mode '(racket-mode racket-repl-mode racket-describe-mode))
+       (racket--in-require-form-p)
+       'racket-xref-module))
 
 (provide 'racket-visit)
 
