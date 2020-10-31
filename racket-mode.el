@@ -129,7 +129,8 @@
 ;;;###autoload
 (define-derived-mode racket-mode prog-mode
   "Racket"
-  "Major mode for editing Racket.
+  "Major mode for editing Racket source files.
+
 \\{racket-mode-map}"
   (racket--common-variables)
   (setq-local imenu-create-index-function #'racket-imenu-create-index-function)

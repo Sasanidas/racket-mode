@@ -33,6 +33,7 @@
 (require 'cl-lib)
 (require 'cl-macs)
 (require 'rx)
+(require 'xref)
 
 ;; Don't (require 'racket-debug). Mutual dependency. Instead:
 (declare-function  racket--debug-send-definition "racket-debug" (beg end))
@@ -915,53 +916,45 @@ and `racket-repl-documentation'."
   (pcase (racket--symbol-at-point-or-prompt prefix "Describe: "
                                             racket--repl-namespace-symbols)
     ((and (pred stringp) str)
-     (racket--do-describe
-      'namespace
-      (racket--repl-session-id)
-      str
-      t
-      (lambda ()
-        (racket--do-visit-def-or-mod (racket--repl-session-id)
-                                     `(def namespace ,str)))
-      (lambda ()
-        (racket--doc-command (racket--repl-session-id) 'namespace str))))))
+     (let ((repl-session-id (racket--repl-session-id)))
+       (racket--do-describe
+        'namespace
+        repl-session-id
+        str
+        t
+        (pcase (xref-backend-definitions 'racket-repl-xref str)
+          (`(,xref) (lambda () (racket--pop-to-xref xref))))
+        (lambda () (racket--doc-command repl-session-id 'namespace str)))))))
 
 ;;; racket-xref-repl
 
-;; (cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-xref-repl)))
-;;   (racket--module-at-point))
+(defun racket-repl-xref-backend-function ()
+  'racket-repl-xref)
 
-(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql racket-xp-xref-repl)))
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql racket-repl-xref)))
+  (or (racket--module-path-name-at-point)
+      (thing-at-point 'symbol)))
+
+(cl-defmethod xref-backend-identifier-completion-table ((_backend (eql racket-repl-xref)))
   (completion-table-dynamic
    (lambda (prefix)
      (all-completions prefix racket--repl-namespace-symbols))))
 
-(cl-defmethod xref-backend-definitions ((_backend (eql racket-xref-repl)) prompt)
-  (pcase (racket--cmd/await racket--repl-session-id `(def namespace ,prompt))
-    (`(,path ,line ,col)
-     (list (xref-make "Summary"
-                      (xref-make-file-location path line col))))
-    (`kernel
-     (list (xref-make "Summary"
-                      (xref-make-bogus-location
-                       "Defined in #%%kernel -- source not available"))))))
-
-(defun racket-xref-repl-backend-function ()
-  (and (memq major-mode '(racket-repl-mode racket-describe-mode))
-       'racket-xref-repl))
-
-;;; Visit
-
-;; TODO: Move to `racket-xp-mode', or arrange for this to call that or
-;; this depending on current-buffer.
-(defun racket-lispy-visit-symbol-definition (str)
-  "Function called by lispy.el's `lispy-goto-symbol' for Racket
-symbol definition lookup."
-  (racket--repl-visit-symbol-definition str))
-
-(defun racket--repl-visit-symbol-definition (str)
-  (racket--do-visit-def-or-mod (racket--repl-session-id)
-                               `(def namespace ,str)))
+(cl-defmethod xref-backend-definitions ((_backend (eql racket-repl-xref)) str)
+  (or
+   (pcase (get-text-property 0 'racket-module-path str)
+     (`absolute
+      (pcase (racket--cmd/await nil `(mod ,(substring-no-properties str)))
+        (`(,path ,line ,col)
+         (list (xref-make str (xref-make-file-location path line col))))))
+     (`relative
+      (list (xref-make str (xref-make-file-location (expand-file-name str) 1 0)))))
+   (pcase (racket--cmd/await racket--repl-session-id `(def namespace ,str))
+     (`(,path ,line ,col)
+      (list (xref-make str (xref-make-file-location path line col))))
+     (`kernel
+      (list (xref-make str (xref-make-bogus-location
+                            "Defined in #%%kernel -- source not available")))))))
 
 ;;; Doc
 
@@ -1085,6 +1078,13 @@ The command varies based on how many \\[universal-argument] command prefixes you
 
 (define-derived-mode racket-repl-mode comint-mode "Racket-REPL"
   "Major mode for Racket REPL.
+
+You may use `xref-find-definitions' \\[xref-find-definitions] and
+`xref-pop-marker-stack' \\[xref-pop-marker-stack]:
+`racket-repl-mode' adds a backend to the variable
+`xref-backend-functions'. This backend uses information about
+identifier bindings and modules from the REPL's namespace.
+
 \\{racket-repl-mode-map}"
   (racket--common-variables)
   (setq-local comint-use-prompt-regexp nil)
@@ -1107,8 +1107,7 @@ The command varies based on how many \\[universal-argument] command prefixes you
   (comint-read-input-ring t)
   (add-hook 'kill-buffer-hook #'comint-write-input-ring nil t)
   (add-hook 'kill-emacs-hook #'racket--repl-save-all-histories nil t)
-  (add-hook 'xref-backend-functions #'racket-xref-repl-backend-function nil t)
-  (add-hook 'xref-backend-functions #'racket-xref-module-backend-function nil t))
+  (add-hook 'xref-backend-functions #'racket-repl-xref-backend-function nil t))
 
 (defun racket--repl-save-all-histories ()
   "Call comint-write-input-ring for all `racket-repl-mode' buffers.
